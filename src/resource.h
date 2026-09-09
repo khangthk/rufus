@@ -71,13 +71,22 @@
 #define IDR_UEFI_NTFS                   502
 #define IDR_SETUP_X64                   503
 #define IDR_SETUP_ARM64                 504
-// The following should match the ArchType array values + 600
+// The following should match the ArchType array values +600/+700
 #define IDR_MD5_BOOT                    600
 #define IDR_MD5_BOOTIA32                601
 #define IDR_MD5_BOOTX64                 602
 #define IDR_MD5_BOOTARM                 603
 #define IDR_MD5_BOOTAA64                604
-#define IDR_MD5_BOOTRISCV64             607
+#define IDR_MD5_BOOTRISCV64             606
+#define IDR_MD5_BOOTLOONGARCH64         607
+#define IDR_DBX                         700
+#define IDR_DBX_IA32                    701
+#define IDR_DBX_X64                     702
+#define IDR_DBX_ARM                     703
+#define IDR_DBX_AA64                    704
+#define IDR_DBX_IA64                    705
+#define IDR_DBX_RISCV64                 706
+#define IDR_DBX_LOONGARCH64             707
 #define IDM_SELECT                      901
 #define IDM_DOWNLOAD                    902
 #define IDC_DEVICE                      1001
@@ -164,25 +173,26 @@
 #define IDC_SELECTION_CHOICE15          1092
 #define IDC_SELECTION_CHOICEMAX         1093
 #define IDC_SELECTION_USERNAME          1094
-#define IDC_LIST_ICON                   1095
-#define IDC_LIST_TEXT                   1096
-#define IDC_LIST_LINE                   1097
-#define IDC_LIST_ITEM1                  1098
-#define IDC_LIST_ITEM2                  1099
-#define IDC_LIST_ITEM3                  1100
-#define IDC_LIST_ITEM4                  1101
-#define IDC_LIST_ITEM5                  1102
-#define IDC_LIST_ITEM6                  1103
-#define IDC_LIST_ITEM7                  1104
-#define IDC_LIST_ITEM8                  1105
-#define IDC_LIST_ITEM9                  1106
-#define IDC_LIST_ITEM10                 1107
-#define IDC_LIST_ITEM11                 1108
-#define IDC_LIST_ITEM12                 1109
-#define IDC_LIST_ITEM13                 1110
-#define IDC_LIST_ITEM14                 1111
-#define IDC_LIST_ITEM15                 1112
-#define IDC_LIST_ITEMMAX                1113
+#define IDC_SELECTION_EDITION           1095
+#define IDC_LIST_ICON                   1100
+#define IDC_LIST_TEXT                   1101
+#define IDC_LIST_LINE                   1102
+#define IDC_LIST_ITEM1                  1103
+#define IDC_LIST_ITEM2                  1104
+#define IDC_LIST_ITEM3                  1105
+#define IDC_LIST_ITEM4                  1106
+#define IDC_LIST_ITEM5                  1107
+#define IDC_LIST_ITEM6                  1108
+#define IDC_LIST_ITEM7                  1109
+#define IDC_LIST_ITEM8                  1110
+#define IDC_LIST_ITEM9                  1111
+#define IDC_LIST_ITEM10                 1112
+#define IDC_LIST_ITEM11                 1113
+#define IDC_LIST_ITEM12                 1114
+#define IDC_LIST_ITEM13                 1115
+#define IDC_LIST_ITEM14                 1116
+#define IDC_LIST_ITEM15                 1117
+#define IDC_LIST_ITEMMAX                1118
 #define IDS_DEVICE_TXT                  2000
 #define IDS_PARTITION_TYPE_TXT          2001
 #define IDS_FILE_SYSTEM_TXT             2002
@@ -605,7 +615,7 @@
 #define MSG_MAX                         3400
 
 // Next default values for new objects
-// 
+//
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1

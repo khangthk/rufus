@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Elementary Unicode compliant find/replace parser
- * Copyright © 2012-2024 Pete Batard <pete@akeo.ie>
+ * Copyright © 2012-2025 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,6 +24,8 @@
 #endif
 
 #include <windows.h>
+#include <wincrypt.h>
+#include <wintrust.h>
 #include <stdio.h>
 #include <wchar.h>
 #include <string.h>
@@ -53,7 +55,7 @@ static loc_cmd* get_loc_cmd(char c, char* line) {
 	char *endptr, *expected_endptr, *token;
 	loc_cmd* lcmd = NULL;
 
-	for (j=0; j<ARRAYSIZE(parse_cmd); j++) {
+	for (j = 0; j<ARRAYSIZE(parse_cmd); j++) {
 		if (c == parse_cmd[j].c)
 			break;
 	}
@@ -131,10 +133,11 @@ static loc_cmd* get_loc_cmd(char c, char* line) {
 		case 'u':	// comma or dot separated list of unsigned integers (to end of line)
 			// count the number of commas
 			lcmd->unum_size = 1;
-			for (l=i; line[l] != 0; l++) {
+			for (l = i; line[l] != 0; l++) {
 				if ((line[l] == '.') || (line[l] == ','))
 					lcmd->unum_size++;
 			}
+			free(lcmd->unum);
 			lcmd->unum = (uint32_t*)malloc(lcmd->unum_size * sizeof(uint32_t));
 			if (lcmd->unum == NULL) {
 				luprint("could not allocate memory");
@@ -891,7 +894,7 @@ static __inline char* get_sanitized_token_data_buffer(const char* token, unsigne
 	size_t i;
 	char* data = get_token_data_buffer(token, n, buffer, buffer_size);
 	if (data != NULL) {
-		for (i=0; i<strlen(data); i++) {
+		for (i = 0; i < strlen(data); i++) {
 			if ((data[i] == '\\') && (data[i+1] == 'n')) {
 				data[i] = '\r';
 				data[i+1] = '\n';
@@ -951,6 +954,7 @@ void parse_update(char* buf, size_t len)
 		safe_free(data);
 	}
 	static_sprintf(download_url_name, "download_url_%s", GetArchName(WindowsVersion.Arch));
+	safe_strtolower(download_url_name);
 	update.download_url = get_sanitized_token_data_buffer(download_url_name, 1, buf, len);
 	if (update.download_url == NULL)
 		update.download_url = get_sanitized_token_data_buffer("download_url", 1, buf, len);
@@ -1301,6 +1305,42 @@ char* replace_char(const char* src, const char c, const char* rep)
 }
 
 /*
+ * Replace all characters from string 'str' that are present in the array of chars 'rem'
+ * to the 'rep' character.
+ */
+void filter_chars(char* str, const char* rem, const char rep)
+{
+	char *p, *q;
+
+	if (str == NULL || rem == NULL)
+		return;
+	for (p = str; *p != '\0'; p++) {
+		for (q = (char*)rem; *q != '\0'; q++)
+			if (*p == *q)
+				*p = rep;
+	}
+}
+
+/*
+ * Trim all leadings and trailing whitespaces
+ */
+void trim(char* str)
+{
+	size_t l;
+	char* p;
+
+	if (str == NULL)
+		return;
+	l = strlen(str);
+	if (l < 1)
+		return;
+	while (isspace(str[l - 1]))
+		str[--l] = '\0';
+	for (p = str; *p != '\0' && isspace(*p); p++, l--);
+	memmove(str, p, l + 1);
+}
+
+/*
  * Remove all instances of substring 'sub' form string 'src.
  * The returned string is allocated and must be freed by the caller.
  */
@@ -1538,7 +1578,7 @@ int sanitize_label(char* label)
 	// Remove all leading '-'
 	for (i = 0; i < len && label[i] == '-'; i++);
 	if (i != 0)
-		memmove(label, &label[i], len - i);
+		memmove(label, &label[i], len - i + 1);
 	len = strlen(label);
 	if (len <= 1)
 		return -1;
@@ -1563,7 +1603,7 @@ int sanitize_label(char* label)
 	for (i = 0; i < ARRAYSIZE(remove); i++) {
 		s = strstr(label, remove[i]);
 		if (s != NULL)
-			strcpy(s, &s[strlen(remove[i])]);
+			memmove(s, &s[strlen(remove[i])], strlen(&s[strlen(remove[i])]) + 1);
 	}
 
 	return 0;
@@ -1578,20 +1618,21 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
 	BOOL eol, eof;
 	char* version_str;
 	uint32_t i, num_entries;
-	sbat_entry_t* _sbat_entries;
+	sbat_entry_t* sbat_list;
 
 	if (sbatlevel == NULL)
 		return NULL;
 
-	num_entries = 0;
-	for (i = 0; sbatlevel[i] != '\0'; i++)
+	num_entries = 1;
+	for (i = 0; sbatlevel[i] != '\0'; i++) {
 		if (sbatlevel[i] == '\n')
 			num_entries++;
+		if (sbatlevel[i] == '\r')
+			sbatlevel[i] = '\n';
+	}
 
-	if (num_entries == 0)
-		return NULL;
-	_sbat_entries = calloc(num_entries + 2, sizeof(sbat_entry_t));
-	if (_sbat_entries == NULL)
+	sbat_list = calloc(num_entries + 1, sizeof(sbat_entry_t));
+	if (sbat_list == NULL)
 		return NULL;
 
 	num_entries = 0;
@@ -1607,7 +1648,7 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
 				i++;
 			continue;
 		}
-		_sbat_entries[num_entries].product = &sbatlevel[i];
+		sbat_list[num_entries].product = &sbatlevel[i];
 		for (; sbatlevel[i] != ',' && sbatlevel[i] != '\0' && sbatlevel[i] != '\n'; i++);
 		if (sbatlevel[i] == '\0' || sbatlevel[i] == '\n')
 			break;
@@ -1621,16 +1662,76 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
 			i++;
 		// Allow the provision of an hex version
 		if (version_str[0] == '0' && version_str[1] == 'x')
-			_sbat_entries[num_entries].version = strtoul(version_str, NULL, 16);
+			sbat_list[num_entries].version = strtoul(version_str, NULL, 16);
 		else
-			_sbat_entries[num_entries].version = strtoul(version_str, NULL, 10);
+			sbat_list[num_entries].version = strtoul(version_str, NULL, 10);
 		if (!eol)
 			for (; sbatlevel[i] != '\0' && sbatlevel[i] != '\n'; i++);
-		if (_sbat_entries[num_entries].version != 0)
+		if (sbat_list[num_entries].version != 0)
 			num_entries++;
 	}
+	if (num_entries == 0) {
+		free(sbat_list);
+		return NULL;
+	}
 
-	return _sbat_entries;
+	return sbat_list;
+}
+
+/*
+ * Parse a list of SHA-1 certificate hexascii thumbprints.
+ * List must be freed by the caller.
+ */
+thumbprint_list_t* GetThumbprintEntries(char* thumbprints_txt)
+{
+	uint32_t i, j, num_entries;
+	thumbprint_list_t* thumbprints;
+
+	if (thumbprints_txt == NULL)
+		return NULL;
+
+	num_entries = 1;
+	for (i = 0; thumbprints_txt[i] != '\0'; i++)
+		if (thumbprints_txt[i] == '\n')
+			num_entries++;
+
+	thumbprints = calloc(sizeof(thumbprint_list_t) + num_entries * SHA1_HASHSIZE, 1);
+	if (thumbprints == NULL)
+		return NULL;
+	thumbprints->count = 0;
+
+	for (i = 0; thumbprints_txt[i] != '\0'; ) {
+		// Eliminate blank lines
+		if (thumbprints_txt[i] == '\n') {
+			i++;
+			continue;
+		}
+		// Eliminate lines that don't start by an hexadecimal digit
+		if (!IS_HEXASCII(thumbprints_txt[i])) {
+			while (thumbprints_txt[i] != '\n' && thumbprints_txt[i] != '\0')
+				i++;
+			continue;
+		}
+		for (j = 0; thumbprints_txt[i] != '\n' && thumbprints_txt[i] != '\0'; i++, j++) {
+			if (!IS_HEXASCII(thumbprints_txt[i]))
+				break;
+			if ((j / 2) >= SHA1_HASHSIZE)
+				break;
+			thumbprints->list[thumbprints->count][j / 2] = thumbprints->list[thumbprints->count][j / 2] << 4;
+			thumbprints->list[thumbprints->count][j / 2] |= FROM_HEXASCII(thumbprints_txt[i]);
+			if (j == 2 * SHA1_HASHSIZE - 1)
+				thumbprints->count++;
+		}
+		while (thumbprints_txt[i] != '\n' && thumbprints_txt[i] != '\0')
+			i++;
+	}
+
+	if (thumbprints->count == 0) {
+		free(thumbprints);
+		return NULL;
+	}
+
+	return thumbprints;
 }
 
 /*
@@ -1641,12 +1742,14 @@ sbat_entry_t* GetSbatEntries(char* sbatlevel)
 uint16_t GetPeArch(uint8_t* buf)
 {
 	IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buf;
-	IMAGE_NT_HEADERS* pe_header;
+	IMAGE_NT_HEADERS32* pe_header;
 
-	if (buf == NULL)
+	if (buf == NULL || dos_header->e_magic != IMAGE_DOS_SIGNATURE)
 		return IMAGE_FILE_MACHINE_UNKNOWN;
 
-	pe_header = (IMAGE_NT_HEADERS*)&buf[dos_header->e_lfanew];
+	pe_header = (IMAGE_NT_HEADERS32*)&buf[dos_header->e_lfanew];
+	if (pe_header->Signature != IMAGE_NT_SIGNATURE)
+		return IMAGE_FILE_MACHINE_UNKNOWN;
 	return pe_header->FileHeader.Machine;
 }
 
@@ -1656,16 +1759,18 @@ uint8_t* GetPeSection(uint8_t* buf, const char* name, uint32_t* len)
 	char section_name[IMAGE_SIZEOF_SHORT_NAME] = { 0 };
 	uint32_t i, nb_sections;
 	IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buf;
-	IMAGE_NT_HEADERS* pe_header;
+	IMAGE_NT_HEADERS32* pe_header;
 	IMAGE_NT_HEADERS64* pe64_header;
 	IMAGE_SECTION_HEADER* section_header;
 
 	static_strcpy(section_name, name);
 
-	if (buf == NULL || name == NULL)
+	if (buf == NULL || name == NULL || dos_header->e_magic != IMAGE_DOS_SIGNATURE)
 		return NULL;
 
-	pe_header = (IMAGE_NT_HEADERS*)&buf[dos_header->e_lfanew];
+	pe_header = (IMAGE_NT_HEADERS32*)&buf[dos_header->e_lfanew];
+	if (pe_header->Signature != IMAGE_NT_SIGNATURE)
+		return NULL;
 	if (pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_I386 || pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM) {
 		section_header = (IMAGE_SECTION_HEADER*)(&pe_header[1]);
 		nb_sections = pe_header->FileHeader.NumberOfSections;
@@ -1689,14 +1794,16 @@ uint8_t* RvaToPhysical(uint8_t* buf, uint32_t rva)
 {
 	uint32_t i, nb_sections;
 	IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buf;
-	IMAGE_NT_HEADERS* pe_header;
+	IMAGE_NT_HEADERS32* pe_header;
 	IMAGE_NT_HEADERS64* pe64_header;
 	IMAGE_SECTION_HEADER* section_header;
 
-	if (buf == NULL)
+	if (buf == NULL || dos_header->e_magic != IMAGE_DOS_SIGNATURE)
 		return NULL;
 
-	pe_header = (IMAGE_NT_HEADERS*)&buf[dos_header->e_lfanew];
+	pe_header = (IMAGE_NT_HEADERS32*)&buf[dos_header->e_lfanew];
+	if (pe_header->Signature != IMAGE_NT_SIGNATURE)
+		return NULL;
 	if (pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_I386 || pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM) {
 		section_header = (IMAGE_SECTION_HEADER*)(pe_header + 1);
 		nb_sections = pe_header->FileHeader.NumberOfSections;
@@ -1754,4 +1861,35 @@ uint32_t FindResourceRva(const wchar_t* name, uint8_t* root, uint8_t* dir, uint3
 		}
 	}
 	return 0;
+}
+
+uint8_t* GetPeSignatureData(uint8_t* buf)
+{
+	IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)buf;
+	IMAGE_NT_HEADERS32* pe_header;
+	IMAGE_NT_HEADERS64* pe64_header;
+	IMAGE_DATA_DIRECTORY sec_dir;
+	WIN_CERTIFICATE* cert;
+
+	if (buf == NULL || dos_header->e_magic != IMAGE_DOS_SIGNATURE)
+		return NULL;
+
+	pe_header = (IMAGE_NT_HEADERS32*)&buf[dos_header->e_lfanew];
+	if (pe_header->Signature != IMAGE_NT_SIGNATURE)
+		return NULL;
+
+	if (pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_I386 || pe_header->FileHeader.Machine == IMAGE_FILE_MACHINE_ARM) {
+		sec_dir = pe_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+	} else {
+		pe64_header = (IMAGE_NT_HEADERS64*)pe_header;
+		sec_dir = pe64_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+	}
+	if (sec_dir.VirtualAddress == 0 || sec_dir.Size == 0)
+		return NULL;
+
+	cert = (WIN_CERTIFICATE*)&buf[sec_dir.VirtualAddress];
+	if (cert->dwLength == 0 || cert->wCertificateType != WIN_CERT_TYPE_PKCS_SIGNED_DATA)
+		return NULL;
+
+	return (uint8_t*)cert;
 }

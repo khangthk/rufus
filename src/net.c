@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Networking functionality (web file download, check for update, etc.)
- * Copyright © 2012-2024 Pete Batard <pete@akeo.ie>
+ * Copyright © 2012-2026 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,12 +24,6 @@
 #endif
 
 #include <windows.h>
-// Temporary workaround for MinGW32 delay-loading
-// See https://github.com/pbatard/rufus/pull/2513
-#if defined(__MINGW32__)
-#undef DECLSPEC_IMPORT
-#define DECLSPEC_IMPORT __attribute__((visibility("hidden")))
-#endif
 #include <wininet.h>
 #include <netlistmgr.h>
 #include <stdio.h>
@@ -37,6 +31,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include <assert.h>
+#include <time.h>
 #include <virtdisk.h>
 
 #include "rufus.h"
@@ -45,6 +40,7 @@
 #include "msapi_utf8.h"
 #include "localization.h"
 #include "bled/bled.h"
+#include "dbx/dbx_info.h"
 
 #include "settings.h"
 
@@ -60,9 +56,10 @@ HANDLE update_check_thread = NULL;
 extern loc_cmd* selected_locale;
 extern HANDLE dialog_handle;
 extern BOOL is_x86_64;
+extern USHORT NativeMachine;
 static DWORD error_code, fido_len = 0;
 static BOOL force_update_check = FALSE;
-static const char* request_headers = "Accept-Encoding: gzip, deflate";
+extern const char* efi_archname[ARCH_MAX];
 
 #if defined(__MINGW32__)
 #define INetworkListManager_get_IsConnectedToInternet INetworkListManager_IsConnectedToInternet
@@ -167,8 +164,8 @@ out:
  * If hProgressDialog is not NULL, this function will send INIT and EXIT messages
  * to the dialog in question, with WPARAM being set to nonzero for EXIT on success
  * and also attempt to indicate progress using an IDC_PROGRESS control
- * Note that when a buffer is used, the actual size of the buffer is one more than its reported
- * size (with the extra byte set to 0) to accommodate for calls that need a NUL-terminated buffer.
+ * Note that when a buffer is used, the actual size of the buffer is two more than its reported
+ * size (with the extra bytes set to 0) to accommodate for calls that need NUL-terminated data.
  */
 uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char* user_agent,
 	BYTE** buffer, HWND hProgressDialog, BOOL bTaskBarProgress)
@@ -176,13 +173,13 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	const char* accept_types[] = {"*/*\0", NULL};
 	const char* short_name;
 	unsigned char buf[DOWNLOAD_BUFFER_SIZE];
-	char hostname[64], urlpath[128], strsize[32];
+	char hostname[64], urlpath[128], strsize[32], *bak_file = NULL;
 	BOOL r = FALSE;
 	DWORD dwSize, dwWritten, dwDownloaded;
 	HANDLE hFile = INVALID_HANDLE_VALUE;
 	HINTERNET hSession = NULL, hConnection = NULL, hRequest = NULL;
-	URL_COMPONENTSA UrlParts = {sizeof(URL_COMPONENTSA), NULL, 1, (INTERNET_SCHEME)0,
-		hostname, sizeof(hostname), 0, NULL, 1, urlpath, sizeof(urlpath), NULL, 1};
+	URL_COMPONENTSA UrlParts = { sizeof(URL_COMPONENTSA), NULL, 1, (INTERNET_SCHEME)0,
+		hostname, sizeof(hostname), 0, NULL, 1, urlpath, sizeof(urlpath), NULL, 1 };
 	uint64_t size = 0, total_size = 0;
 
 	ErrorStatus = 0;
@@ -199,6 +196,13 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	if (hProgressDialog != NULL) {
 		PrintInfo(5000, MSG_085, short_name);
 		uprintf("Downloading %s", url);
+	}
+
+	// If an old file with the same name exists, rename it so we can restore it in case of failure
+	if (file != NULL && PathFileExistsU((char*)file) && (bak_file = calloc(1, strlen(file) + 6)) != NULL) {
+		strcpy(bak_file, file);
+		strcat(bak_file, ".bak");
+		MoveFileU(file, bak_file);
 	}
 
 	if ( (!InternetCrackUrlA(url, (DWORD)safe_strlen(url), 0, &UrlParts))
@@ -223,20 +227,26 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	hRequest = HttpOpenRequestA(hConnection, "GET", UrlParts.lpszUrlPath, NULL, NULL, accept_types,
 		INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP | INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
 		INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK |
-		((UrlParts.nScheme==INTERNET_SCHEME_HTTPS)?INTERNET_FLAG_SECURE:0), (DWORD_PTR)NULL);
+		((UrlParts.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0), (DWORD_PTR)NULL);
 	if (hRequest == NULL) {
 		uprintf("Could not open URL %s: %s", url, WindowsErrorString());
 		goto out;
 	}
 
-	if (!HttpSendRequestA(hRequest, request_headers, -1L, NULL, 0)) {
-		uprintf("Unable to send request: %s", WindowsErrorString());
+	// If we are querying the GitHub API, we need to enable raw content
+	if (strstr(url, "api.github.com") != NULL && !HttpAddRequestHeadersA(hRequest,
+		"Accept: application/vnd.github.v3.raw", (DWORD)-1, HTTP_ADDREQ_FLAG_ADD)) {
+		uprintf("Unable to enable raw content from GitHub API: %s", WindowsErrorString());
 		goto out;
 	}
+	// Must use "Accept-Encoding: identity" to get the file size
+	// This is needed for GitHub as the Microsoft HTTP APIs can't seem to read content-length for
+	// compressed content from GitHub, and using "identity" disables compression.
+	HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
 
 	// Get the file size
 	dwSize = sizeof(DownloadStatus);
-	HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, (LPVOID)&DownloadStatus, &dwSize, NULL);
+	HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, (LPVOID)&DownloadStatus, &dwSize, NULL);
 	if (DownloadStatus != 200) {
 		error_code = ERROR_INTERNET_ITEM_NOT_FOUND;
 		SetLastError(RUFUS_ERROR(error_code));
@@ -271,7 +281,7 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 			goto out;
 		}
 		// Allocate one extra byte, so that caller can rely on NUL-terminated text if needed
-		*buffer = calloc((size_t)total_size + 1, 1);
+		*buffer = calloc((size_t)total_size + 2, 1);
 		if (*buffer == NULL) {
 			uprintf("Could not allocate buffer for download");
 			goto out;
@@ -324,8 +334,12 @@ out:
 	if (!r) {
 		if (file != NULL)
 			DeleteFileU(file);
+		if (bak_file != NULL)
+			MoveFileU(bak_file, file);
 		if (buffer != NULL)
 			safe_free(*buffer);
+	} else if (bak_file != NULL) {
+		DeleteFileU(bak_file);
 	}
 	if (hRequest)
 		InternetCloseHandle(hRequest);
@@ -394,8 +408,7 @@ out:
 	if ((bPromptOnError) && (DownloadStatus != 200)) {
 		PrintInfo(0, MSG_242);
 		SetLastError(error_code);
-		MessageBoxExU(hMainDialog, IS_ERROR(ErrorStatus) ? StrError(ErrorStatus, FALSE) : WindowsErrorString(),
-			lmprintf(MSG_044), MB_OK | MB_ICONERROR | MB_IS_RTL, selected_langid);
+		Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_044), IS_ERROR(ErrorStatus) ? StrError(ErrorStatus, FALSE) : WindowsErrorString());
 	}
 	safe_closehandle(hFile);
 	free(url_sig);
@@ -436,8 +449,88 @@ static __inline uint64_t to_uint64_t(uint16_t x[3]) {
 	return ret;
 }
 
+BOOL UseLocalDbx(int arch)
+{
+	char reg_name[32];
+	static_sprintf(reg_name, "DBXTimestamp_%s", efi_archname[arch]);
+	return (uint64_t)ReadSetting64(reg_name) > dbx_info[arch - 1].timestamp;
+}
+
+static void CheckForDBXUpdates(int verbose)
+{
+	int i, r;
+	char reg_name[32], timestamp_url[256], path[MAX_PATH];
+	char *p, *c, *rep, *buf = NULL;
+	struct tm t = { 0 };
+	uint64_t size, timestamp;
+	BOOL already_prompted = FALSE;
+
+	for (i = 0; i < ARRAYSIZE(dbx_info); i++) {
+		// Get the epoch of the last commit
+		timestamp = 0;
+		static_strcpy(timestamp_url, dbx_info[i].url);
+		p = strstr(timestamp_url, "contents/");
+		if (p == NULL)
+			continue;
+		*p = 0;
+		rep = replace_char(&p[9], '/', "%2F");
+		static_strcat(timestamp_url, "commits?path=");
+		static_strcat(timestamp_url, rep);
+		free(rep);
+		static_strcat(timestamp_url, "&page=1&per_page=1");
+		vuprintf("Querying %s for DBX update timestamp", timestamp_url);
+		size = DownloadToFileOrBuffer(timestamp_url, NULL, (BYTE**)&buf, NULL, FALSE);
+		if (size == 0)
+			continue;
+		// Assumes that the GitHub JSON commit dates are of the form:
+		// "date":[ ]*"2025-02-24T20:20:22Z"
+		p = strstr(buf, "\"date\":");
+		if (p == NULL) {
+			safe_free(buf);
+			continue;
+		}
+		c = &p[7];
+		while (*c == ' ' || *c == '"')
+			c++;
+		p = c;
+		while (*c != '"' && *c != '\0')
+			c++;
+		*c = 0;
+		// "Thank you, X3J11 ANSI committee, for introducing the well thought through 'struct tm'", said ABSOLUTELY NOONE ever!
+		r = sscanf(p, "%d-%d-%dT%d:%d:%dZ", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec);
+		safe_free(buf);
+		if (r != 6)
+			continue;
+		t.tm_year -= 1900;
+		t.tm_mon -= 1;
+		timestamp = _mkgmtime64(&t);
+		vuprintf("DBX update timestamp is %" PRId64, timestamp);
+		static_sprintf(reg_name, "DBXTimestamp_%s", efi_archname[i + 1]);
+		// Check if we have an external DBX that is newer than embedded/last downloaded
+		if (timestamp <= dbx_info[i].timestamp)
+			continue;
+		static_sprintf(path, "%s\\%s\\dbx_%s.bin", app_data_dir, FILES_DIR, efi_archname[i + 1]);
+		if (PathFileExistsU(path) && timestamp <= (uint64_t)ReadSetting64(reg_name))
+			continue;
+		if (!already_prompted) {
+			r = Notification(MB_YESNO | MB_ICONWARNING, lmprintf(MSG_353), lmprintf(MSG_354));
+			already_prompted = TRUE;
+			if (r != IDYES)
+				break;
+			IGNORE_RETVAL(_chdirU(app_data_dir));
+			IGNORE_RETVAL(_mkdir(FILES_DIR));
+			IGNORE_RETVAL(_chdir(FILES_DIR));
+		}
+		if (DownloadToFileOrBuffer(dbx_info[i].url, path, NULL, NULL, FALSE) != 0) {
+			WriteSetting64(reg_name, timestamp);
+			uprintf("Saved %s as 'dbx_%s.bin'", dbx_info[i].url, efi_archname[i + 1]);
+		} else
+			uprintf("WARNING: Failed to download %s", dbx_info[i].url);
+	}
+}
+
 /*
- * Background thread to check for updates
+ * Background thread to check for updates (including UEFI DBX updates)
  */
 static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 {
@@ -491,6 +584,10 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 		}
 	}
 
+	// Perform the DBX Update check
+	PrintInfoDebug(3000, MSG_352);
+	CheckForDBXUpdates(verbose);
+
 	PrintInfoDebug(3000, MSG_243);
 	status++;	// 1
 
@@ -522,6 +619,9 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 #endif
 	vuprintf("Using %s for the update check", RUFUS_URL);
 	for (k = 0; (k < max_channel) && (!found_new_version); k++) {
+		// Get the arch name and convert it lowercase
+		char* archname = strdup(GetArchName(WindowsVersion.Arch));
+		safe_strtolower(archname);
 		// Free any previous buffers we might have used
 		safe_free(buf);
 		safe_free(sig);
@@ -533,7 +633,8 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 		// This allows sunsetting OS versions (eg XP) or providing different downloads for different archs/groups.
 		// Note that for BETAs, we only catter for x64 regardless of the OS arch.
 		static_sprintf(urlpath, "%s%s%s_win_%s_%lu.%lu.ver", APPLICATION_NAME, (k == 0) ? "": "_",
-			(k == 0) ? "" : channel[k], GetArchName(WindowsVersion.Arch), WindowsVersion.Major, WindowsVersion.Minor);
+			(k == 0) ? "" : channel[k], archname, WindowsVersion.Major, WindowsVersion.Minor);
+		safe_free(archname);
 		vuprintf("Base update check: %s", urlpath);
 		for (i = 0, j = (int)safe_strlen(urlpath) - 5; (j > 0) && (i < ARRAYSIZE(verpos)); j--) {
 			if ((urlpath[j] == '.') || (urlpath[j] == '_')) {
@@ -544,16 +645,18 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 
 		UrlParts.lpszUrlPath = urlpath;
 		UrlParts.dwUrlPathLength = sizeof(urlpath);
-		for (i=0; i<ARRAYSIZE(verpos); i++) {
+		for (i = 0; i < ARRAYSIZE(verpos); i++) {
 			vvuprintf("Trying %s", UrlParts.lpszUrlPath);
 			hRequest = HttpOpenRequestA(hConnection, "GET", UrlParts.lpszUrlPath, NULL, NULL, accept_types,
-				INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP|INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS|
-				INTERNET_FLAG_NO_COOKIES|INTERNET_FLAG_NO_UI|INTERNET_FLAG_NO_CACHE_WRITE|INTERNET_FLAG_HYPERLINK|
-				((UrlParts.nScheme == INTERNET_SCHEME_HTTPS)?INTERNET_FLAG_SECURE:0), (DWORD_PTR)NULL);
-			if ((hRequest == NULL) || (!HttpSendRequestA(hRequest, request_headers, -1L, NULL, 0))) {
+				INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP | INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
+				INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK |
+				((UrlParts.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0), (DWORD_PTR)NULL);
+			if (hRequest == NULL) {
 				uprintf("Unable to send request: %s", WindowsErrorString());
 				goto out;
 			}
+			// Must use "Accept-Encoding: identity" to get the file size
+			HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
 
 			// Ensure that we get a text file
 			dwSize = sizeof(dwStatus);
@@ -696,7 +799,7 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 	uint64_t uncompressed_size;
 	int64_t size = -1;
 	BYTE *compressed = NULL, *sig = NULL;
-	HANDLE hFile, hPipe;
+	HANDLE hFile = INVALID_HANDLE_VALUE, hPipe = INVALID_HANDLE_VALUE;
 	DWORD dwExitCode = 99, dwCompressedSize, dwSize, dwAvail, dwPipeSize = 4096;
 	GUID guid;
 
@@ -764,10 +867,18 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 	}
 	PrintInfo(0, MSG_148);
 
-	assert((fido_script != NULL) && (fido_len != 0));
+	if_assert_fails((fido_script != NULL) && (fido_len != 0))
+		goto out;
 
+	// Why oh why does PowerShell refuse to open read-only files that haven't been closed?
+	// Because of this limitation, we can't fully prevent TOCTOUs on the file we create, and therefore we:
+	// - Create the file with a "random" non-guessable name => TOCTOUs require a permanently running script/exe
+	// - Create the file in the user's AppData temp directory => TOCTOUs can't be enacted by a different user
+	// - Create the file with Administrator access only => TOCTOUs require elevated privileges (in which case
+	// the machine is already compromised anyway, so TOCTOU attacks become entirely moot)
+	// See https://github.com/pbatard/rufus/security/advisories/GHSA-hcx5-hrhj-xhq9 and CVE-2026-23988.
 	static_sprintf(script_path, "%s%s.ps1", temp_dir, GuidToString(&guid, TRUE));
-	hFile = CreateFileU(script_path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY, NULL);
+	hFile = CreateFileRestrictedU(script_path, GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY);
 	if (hFile == INVALID_HANDLE_VALUE) {
 		uprintf("Unable to create download script '%s': %s", script_path, WindowsErrorString());
 		goto out;
@@ -776,8 +887,6 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 		uprintf("Unable to write download script '%s': %s", script_path, WindowsErrorString());
 		goto out;
 	}
-	// Why oh why does PowerShell refuse to open read-only files that haven't been closed?
-	// Because of this limitation, we can't use LockFileEx() on the file we create...
 	safe_closehandle(hFile);
 #endif
 	static_sprintf(powershell_path, "%s\\WindowsPowerShell\\v1.0\\powershell.exe", system_dir);
@@ -795,13 +904,17 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 		goto out;
 	}
 
-	static_sprintf(cmdline, "\"%s\" -NonInteractive -Sta -NoProfile –ExecutionPolicy Bypass "
-		"-File \"%s\" -PipeName %s -LocData \"%s\" -Icon \"%s\" -AppTitle \"%s\"",
-		powershell_path, script_path, &pipe[9], locale_str, icon_path, lmprintf(MSG_149));
+	// Ideally, since our script is signed, we'd have '-ExecutionPolicy AllSigned' below.
+	// Except that, in the myriad of execution policy options they provide, Microsoft chose
+	// not to add an option that allows signed scripts that validate up to the root of trust,
+	// but aren't in Trusted Publishers, to be validated:
+	// https://old.reddit.com/r/PowerShell/comments/kpwi5r/powershell_script_signing_trusted_publisher_prompt/gzi10oc/
+	static_sprintf(cmdline, "\"%s\" -NonInteractive -Sta -NoProfile -ExecutionPolicy Bypass "
+		"-File \"%s\" -PipeName %s -LocData \"%s\" -Icon \"%s\" -AppTitle \"%s\" -PlatformArch \"%s\"",
+		powershell_path, script_path, &pipe[9], locale_str, icon_path, lmprintf(MSG_149), GetArchName(NativeMachine));
 
 #ifndef RUFUS_TEST
-	// For extra security, even after we validated that the LZMA download is properly
-	// signed, we also validate the Authenticode signature of the local script.
+	// Because we can't force PowerShell to do it, we validate the signature of the local script.
 	if (ValidateSignature(INVALID_HANDLE_VALUE, script_path) != NO_ERROR) {
 		uprintf("FATAL: Script signature is invalid ✗");
 		ErrorStatus = RUFUS_ERROR(APPERR(ERROR_BAD_SIGNATURE));
@@ -824,14 +937,7 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 			dwSize = (DWORD)strlen(FORCE_URL);
 #endif
 			IMG_SAVE img_save = { 0 };
-// WTF is wrong with Microsoft's static analyzer reporting a potential buffer overflow here?!?
-#if defined(_MSC_VER)
-#pragma warning(disable: 6386)
-#endif
 			url[min(dwSize, dwAvail)] = 0;
-#if defined(_MSC_VER)
-#pragma warning(default: 6386)
-#endif
 			EXT_DECL(img_ext, GetShortName(url), __VA_GROUP__("*.iso"), __VA_GROUP__(lmprintf(MSG_036)));
 			img_save.Type = VIRTUAL_STORAGE_TYPE_DEVICE_ISO;
 			img_save.ImagePath = FileDialog(TRUE, NULL, &img_ext, NULL);
@@ -846,10 +952,10 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 				SendMessage(hMainDialog, UM_PROGRESS_EXIT, 0, 0);
 				if (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED) {
 					uprintf("Download cancelled by user");
-					Notification(MSG_INFO, NULL, NULL, lmprintf(MSG_211), lmprintf(MSG_041));
+					Notification(MB_ICONINFORMATION | MB_CLOSE, lmprintf(MSG_211), lmprintf(MSG_041));
 					PrintInfo(0, MSG_211);
 				} else {
-					Notification(MSG_ERROR, NULL, NULL, lmprintf(MSG_194, GetShortName(url)), lmprintf(MSG_043, WindowsErrorString()));
+					Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_194, GetShortName(url)), lmprintf(MSG_043, WindowsErrorString()));
 					PrintInfo(0, MSG_212);
 				}
 			} else {
@@ -862,10 +968,12 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 	}
 
 out:
-	if (icon_path[0] != 0)
+	safe_closehandle(hPipe);
+	safe_closehandle(hFile);
+	if (icon_path[0] != '\0')
 		DeleteFileU(icon_path);
 #if !defined(RUFUS_TEST)
-	if (script_path[0] != 0) {
+	if (script_path[0] != '\0') {
 		SetFileAttributesU(script_path, FILE_ATTRIBUTE_NORMAL);
 		DeleteFileU(script_path);
 	}
@@ -924,8 +1032,8 @@ BOOL IsDownloadable(const char* url)
 	if (hRequest == NULL)
 		goto out;
 
-	if (!HttpSendRequestA(hRequest, request_headers, -1L, NULL, 0))
-		goto out;
+	// Must use "Accept-Encoding: identity" to get the file size
+	HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
 
 	// Get the file size
 	dwSize = sizeof(DownloadStatus);

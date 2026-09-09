@@ -33,7 +33,7 @@ LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 IDD_DIALOG DIALOGEX 12, 12, 232, 326
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_MINIMIZEBOX | WS_POPUP | WS_CAPTION | WS_SYSMENU
 EXSTYLE WS_EX_ACCEPTFILES
-CAPTION "Rufus 4.6.2201"
+CAPTION "Rufus 4.15.2404"
 FONT 9, "Segoe UI Symbol", 400, 0, 0x0
 BEGIN
     LTEXT           "Drive Properties",IDS_DRIVE_PROPERTIES_TXT,8,6,53,12,NOT WS_GROUP
@@ -145,6 +145,7 @@ BEGIN
     PUSHBUTTON      "Yes",IDYES,148,53,50,14,NOT WS_VISIBLE
     CONTROL         "Do not show this message again",IDC_DONT_DISPLAY_AGAIN,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,8,39,248,10,WS_EX_TRANSPARENT
+    PUSHBUTTON      "Abort",IDABORT,91,53,50,14,NOT WS_VISIBLE
 END
 
 IDD_SELECTION DIALOGEX 0, 0, 312, 71
@@ -175,6 +176,7 @@ BEGIN
     CONTROL         "Choice 15",IDC_SELECTION_CHOICE15,"Button",BS_AUTORADIOBUTTON | NOT WS_VISIBLE | WS_TABSTOP,35,200,269,10,WS_EX_TRANSPARENT
     CONTROL         "Choice 16",IDC_SELECTION_CHOICEMAX,"Button",BS_AUTORADIOBUTTON | NOT WS_VISIBLE | WS_TABSTOP,35,213,269,10,WS_EX_TRANSPARENT
     EDITTEXT        IDC_SELECTION_USERNAME,197,57,0,9,ES_AUTOHSCROLL | NOT WS_VISIBLE | WS_TABSTOP | WS_BORDER
+    COMBOBOX        IDC_SELECTION_EDITION,197,57,0,9,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 END
 
 IDD_LIST DIALOGEX 0, 0, 312, 59
@@ -211,7 +213,7 @@ CAPTION "Update policy and settings"
 FONT 9, "Segoe UI Symbol", 400, 0, 0x0
 BEGIN
     ICON            IDI_ICON,IDC_ABOUT_ICON,11,8,20,20
-    CONTROL         "",IDC_POLICY,"RichEdit20W",WS_VSCROLL | WS_TABSTOP | 0x804,46,8,235,132,WS_EX_STATICEDGE
+    CONTROL         "",IDC_POLICY,"RichEdit20W",WS_VSCROLL | WS_TABSTOP | 0x804,45,8,236,132,WS_EX_STATICEDGE
     GROUPBOX        "Settings",IDS_UPDATE_SETTINGS_GRP,45,145,165,46
     LTEXT           "Check for updates",IDS_UPDATE_FREQUENCY_TXT,51,158,80,10
     COMBOBOX        IDC_UPDATE_FREQUENCY,133,158,66,12,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
@@ -312,6 +314,14 @@ BEGIN
     "IDR_MD5_BOOTARM         RCDATA                  ""../res/md5/bootarm.efi""\r\n"
     "IDR_MD5_BOOTAA64        RCDATA                  ""../res/md5/bootaa64.efi""\r\n"
     "IDR_MD5_BOOTRISCV64     RCDATA                  ""../res/md5/bootriscv64.efi""\r\n"
+    "IDR_MD5_BOOTLOONGARCH64 RCDATA                  ""../res/md5/bootloongarch64.efi""\r\n"
+    "IDR_DBX_IA32            RCDATA                  ""../res/dbx/dbx_ia32.efiauth2""\r\n"
+    "IDR_DBX_X64             RCDATA                  ""../res/dbx/dbx_x64.efiauth2""\r\n"
+    "IDR_DBX_ARM             RCDATA                  ""../res/dbx/dbx_arm.efiauth2""\r\n"
+    "IDR_DBX_AA64            RCDATA                  ""../res/dbx/dbx_aarch64.efiauth2""\r\n"
+    "IDR_DBX_IA64            RCDATA                  ""../res/dbx/dbx_ia64.efiauth2""\r\n"
+    "IDR_DBX_RISCV64         RCDATA                  ""../res/dbx/dbx_riscv64.efiauth2""\r\n"
+    "IDR_DBX_LOONGARCH64     RCDATA                  ""../res/dbx/dbx_loongarch64.efiauth2""\r\n"
     "IDI_LANG_16             RCDATA                  ""../res/icons/lang-16.png""\r\n"
     "IDI_INFO_16             RCDATA                  ""../res/icons/info-16.png""\r\n"
     "IDI_SETTINGS_16         RCDATA                  ""../res/icons/settings-16.png""\r\n"
@@ -399,8 +409,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 4,6,2201,0
- PRODUCTVERSION 4,6,2201,0
+ FILEVERSION 4,15,2404,0
+ PRODUCTVERSION 4,15,2404,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -418,13 +428,13 @@ BEGIN
             VALUE "Comments", "https://rufus.ie"
             VALUE "CompanyName", "Akeo Consulting"
             VALUE "FileDescription", "Rufus"
-            VALUE "FileVersion", "4.6.2201"
+            VALUE "FileVersion", "4.15.2404"
             VALUE "InternalName", "Rufus"
-            VALUE "LegalCopyright", "© 2011-2024 Pete Batard (GPL v3)"
+            VALUE "LegalCopyright", "© 2011-2026 Pete Batard (GPL v3)"
             VALUE "LegalTrademarks", "https://www.gnu.org/licenses/gpl-3.0.html"
-            VALUE "OriginalFilename", "rufus-4.6.exe"
+            VALUE "OriginalFilename", "rufus-4.15.exe"
             VALUE "ProductName", "Rufus"
-            VALUE "ProductVersion", "4.6.2201"
+            VALUE "ProductVersion", "4.15.2404"
         END
     END
     BLOCK "VarFileInfo"
@@ -499,6 +509,14 @@ IDR_MD5_BOOTX64         RCDATA                  "../res/md5/bootx64.efi"
 IDR_MD5_BOOTARM         RCDATA                  "../res/md5/bootarm.efi"
 IDR_MD5_BOOTAA64        RCDATA                  "../res/md5/bootaa64.efi"
 IDR_MD5_BOOTRISCV64     RCDATA                  "../res/md5/bootriscv64.efi"
+IDR_MD5_BOOTLOONGARCH64 RCDATA                  "../res/md5/bootloongarch64.efi"
+IDR_DBX_IA32            RCDATA                  "../res/dbx/dbx_ia32.efiauth2"
+IDR_DBX_X64             RCDATA                  "../res/dbx/dbx_x64.efiauth2"
+IDR_DBX_ARM             RCDATA                  "../res/dbx/dbx_arm.efiauth2"
+IDR_DBX_AA64            RCDATA                  "../res/dbx/dbx_aarch64.efiauth2"
+IDR_DBX_IA64            RCDATA                  "../res/dbx/dbx_ia64.efiauth2"
+IDR_DBX_RISCV64         RCDATA                  "../res/dbx/dbx_riscv64.efiauth2"
+IDR_DBX_LOONGARCH64     RCDATA                  "../res/dbx/dbx_loongarch64.efiauth2"
 IDI_LANG_16             RCDATA                  "../res/icons/lang-16.png"
 IDI_INFO_16             RCDATA                  "../res/icons/info-16.png"
 IDI_SETTINGS_16         RCDATA                  "../res/icons/settings-16.png"
